@@ -365,3 +365,320 @@ This document outlines the Appwrite database collections required for the Smart 
 - **Alerts**: 30 days (unless unread)
 - **Reports**: 2 years
 - **Receipts**: Indefinite (user controlled)
+- **Escrow Transactions**: 7 years (compliance)
+- **Escrow Events**: 7 years (audit trail)
+
+---
+
+# STRIPE CONNECT ESCROW SYSTEM
+
+## Collections for Marketplace/Escrow Functionality
+
+### 20. stripe_connected_accounts
+- **Purpose**: Seller Stripe Connect account information
+- **Attributes**:
+  - userId (string, required) - Reference to users collection
+  - stripeAccountId (string, required) - Stripe connected account ID
+  - accountType (enum, required) - "standard" | "express" | "custom"
+  - country (string, required) - Country code (NZ, AU, US, etc.)
+  - currency (string, required) - Default currency (nzd, aud, usd)
+  - isActive (boolean, required) - Account active status
+  - isVerified (boolean, required) - KYC verification complete
+  - canReceivePayments (boolean) - Can receive payments
+  - canMakePayouts (boolean) - Can make payouts
+  - requirementsCurrentlyDueJSON (string) - JSON array of requirements
+  - requirementsPastDueJSON (string) - JSON array of past due requirements
+  - requirementsEventuallyDueJSON (string) - JSON array of eventual requirements
+  - payoutsEnabled (boolean) - Payouts enabled by Stripe
+  - chargesEnabled (boolean) - Charges enabled by Stripe
+  - detailsSubmitted (boolean) - Onboarding completed
+  - onboardingLink (string, optional) - Temporary onboarding URL
+  - onboardingExpiresAt (datetime, optional) - Onboarding link expiry
+- **Indexes**:
+  - userId (unique)
+  - stripeAccountId (unique)
+  - isActive
+- **Relationships**:
+  - userId → users.$id
+
+### 21. escrow_transactions
+- **Purpose**: Core escrow transaction management
+- **Attributes**:
+  - buyerId (string, required) - Reference to users collection
+  - sellerId (string, required) - Reference to users collection
+  - sellerStripeAccountId (string, required) - Stripe connected account ID
+  - itemDescription (string, required) - What is being sold
+  - itemType (enum, required) - "physical_goods" | "digital_goods" | "service" | "subscription"
+  - amount (integer, required) - Total amount in cents
+  - platformFee (integer, required) - Platform fee in cents
+  - sellerAmount (integer, required) - Amount seller receives
+  - currency (string, required) - Currency code (nzd, aud, usd)
+  - stripePaymentIntentId (string, required) - Stripe payment intent ID
+  - stripeChargeId (string, optional) - Stripe charge ID
+  - stripeTransferId (string, optional) - Stripe transfer ID
+  - stripePayoutId (string, optional) - Stripe payout ID
+  - status (enum, required) - "pending_payment" | "payment_received" | "shipped" | "in_transit" | "delivered" | "confirmed" | "auto_released" | "released" | "disputed" | "refunded" | "cancelled"
+  - statusHistoryJSON (string, required) - JSON array of status history
+  - settlementConditionsJSON (string, required) - JSON array of settlement conditions
+  - allConditionsMet (boolean, required) - All conditions satisfied
+  - shippingDetailsJSON (string, optional) - JSON object of shipping data
+  - disputeReason (string, optional) - Reason for dispute
+  - disputedAt (datetime, optional) - When dispute was opened
+  - disputeResolutionJSON (string, optional) - JSON object of resolution
+  - disputePeriodDays (integer, required) - Number of days for dispute period
+  - disputePeriodEndsAt (datetime, optional) - When dispute period ends
+  - metadataJSON (string, optional) - Custom metadata JSON
+- **Indexes**:
+  - buyerId
+  - sellerId
+  - status
+  - $createdAt (desc)
+- **Relationships**:
+  - buyerId → users.$id
+  - sellerId → users.$id
+
+### 22. escrow_events
+- **Purpose**: Audit trail and event log for escrow transactions
+- **Attributes**:
+  - escrowTransactionId (string, required) - Reference to escrow_transactions
+  - eventType (enum, required) - "payment_received" | "shipped" | "tracking_updated" | "delivered" | "confirmed" | "disputed" | "refunded" | "released" | "condition_met" | "condition_failed"
+  - description (string, required) - Human-readable description
+  - triggeredBy (enum, required) - "buyer" | "seller" | "platform" | "system" | "webhook"
+  - dataJSON (string, optional) - Additional event data as JSON
+- **Indexes**:
+  - escrowTransactionId
+  - eventType
+  - $createdAt (desc)
+- **Relationships**:
+  - escrowTransactionId → escrow_transactions.$id
+
+### 23. escrow_platform_config
+- **Purpose**: Platform-wide escrow configuration
+- **Attributes**:
+  - platformFeePercentage (float, required) - Platform fee % (e.g., 2.5)
+  - platformFeeFixed (integer, required) - Fixed platform fee in cents
+  - stripeFeePercentage (float, required) - Stripe fee % (2.9)
+  - stripeFeeFixed (integer, required) - Stripe fixed fee in cents (30)
+  - defaultDisputePeriodDays (integer, required) - Default dispute period (7)
+  - defaultAutoReleaseDays (integer, required) - Default auto-release days (14)
+  - defaultInspectionDays (integer, required) - Default inspection days (3)
+  - minTransactionAmount (integer, required) - Minimum transaction in cents
+  - maxTransactionAmount (integer, required) - Maximum without manual review
+  - requiresTrackingAbove (integer, required) - Require tracking above this amount
+  - supportEmail (string, required) - Support contact email
+  - supportPhone (string, optional) - Support phone number
+  - termsUrl (string, required) - Terms of service URL
+  - privacyUrl (string, required) - Privacy policy URL
+- **Note**: Usually only 1 document in this collection (singleton pattern)
+
+## Settlement Condition Examples
+
+### Physical Goods (E-commerce):
+```json
+[
+  {
+    "type": "tracking_confirmation",
+    "description": "Seller must provide tracking and item must be delivered",
+    "priority": 1,
+    "config": { "requireTracking": true }
+  },
+  {
+    "type": "buyer_confirmation",
+    "description": "Buyer must confirm receipt OR",
+    "priority": 2,
+    "config": { "confirmationRequired": true }
+  },
+  {
+    "type": "time_based",
+    "description": "Auto-release after 14 days if no dispute",
+    "priority": 3,
+    "config": {
+      "autoReleaseDays": 14,
+      "autoReleaseAt": "2025-12-01T00:00:00Z"
+    }
+  }
+]
+```
+
+### Digital Goods:
+```json
+[
+  {
+    "type": "buyer_confirmation",
+    "description": "Buyer must confirm receipt OR",
+    "priority": 1,
+    "config": { "confirmationRequired": true }
+  },
+  {
+    "type": "time_based",
+    "description": "Auto-release after 48 hours if no dispute",
+    "priority": 2,
+    "config": {
+      "autoReleaseDays": 2,
+      "autoReleaseAt": "2025-11-17T00:00:00Z"
+    }
+  }
+]
+```
+
+### Service/Freelance Project:
+```json
+[
+  {
+    "type": "milestone_based",
+    "description": "All project milestones must be completed",
+    "priority": 1,
+    "config": {
+      "milestones": [
+        {
+          "id": "1",
+          "description": "Design mockups delivered",
+          "percentage": 30,
+          "completed": false
+        },
+        {
+          "id": "2",
+          "description": "Development complete",
+          "percentage": 60,
+          "completed": false
+        },
+        {
+          "id": "3",
+          "description": "Final delivery and handoff",
+          "percentage": 10,
+          "completed": false
+        }
+      ]
+    }
+  },
+  {
+    "type": "buyer_confirmation",
+    "description": "Buyer must approve final deliverable",
+    "priority": 2,
+    "config": { "confirmationRequired": true }
+  }
+]
+```
+
+### High-Value Items (with Inspection):
+```json
+[
+  {
+    "type": "delivery_confirmation",
+    "description": "Item must be delivered with signature",
+    "priority": 1,
+    "config": { "requireSignature": true }
+  },
+  {
+    "type": "inspection_period",
+    "description": "3-day inspection period for buyer",
+    "priority": 2,
+    "config": {
+      "inspectionDays": 3,
+      "inspectionDeadline": "2025-11-20T00:00:00Z"
+    }
+  },
+  {
+    "type": "buyer_confirmation",
+    "description": "Buyer must confirm item condition",
+    "priority": 3,
+    "config": { "confirmationRequired": true }
+  }
+]
+```
+
+## Escrow Transaction Lifecycle
+
+```
+1. PENDING_PAYMENT
+   ↓ (buyer pays)
+2. PAYMENT_RECEIVED
+   ↓ (seller ships with tracking)
+3. SHIPPED
+   ↓ (carrier updates)
+4. IN_TRANSIT
+   ↓ (carrier confirms delivery)
+5. DELIVERED
+   ↓ (buyer confirms OR timer expires)
+6. CONFIRMED
+   ↓ (conditions evaluated)
+7. RELEASED (funds to seller's bank)
+
+Alternate paths:
+- DISPUTED → REFUNDED (buyer gets money back)
+- DISPUTED → RELEASED (seller wins dispute)
+- CANCELLED (before payment)
+```
+
+## Stripe Connect Setup Notes
+
+### Account Type: CUSTOM
+- **Why Custom?** Sellers cannot access Stripe dashboard
+- **Benefit:** Seller never sees Stripe balance - only sees balance in YOUR app
+- **Control:** Platform has full control over when payouts occur
+- **Branding:** Completely white-labeled experience
+
+### Payout Strategy: MANUAL with Immediate Transfer
+```typescript
+1. Payment captured → Funds in platform Stripe account
+2. Conditions met → Transfer to seller's Connect account
+3. IMMEDIATELY trigger payout → Funds go to seller's bank
+4. Seller never sees/accesses Stripe balance
+5. Payout typically takes 2-5 business days to bank
+```
+
+### Multi-Region Support
+- NZ: Stripe Connect supports NZD
+- AU: Stripe Connect supports AUD
+- US: Stripe Connect supports USD
+- 40+ countries supported
+
+## Cron Job Setup
+
+### Auto-Release Job
+- **Frequency:** Every hour
+- **Purpose:** Check and release funds when time-based conditions are met
+- **Route:** `/api/cron/escrow-auto-release`
+- **Security:** Protected by CRON_SECRET
+
+### Vercel Cron Configuration
+Add to `vercel.json`:
+```json
+{
+  "crons": [{
+    "path": "/api/cron/escrow-auto-release",
+    "schedule": "0 * * * *"
+  }]
+}
+```
+
+## Storage Buckets for Escrow
+
+### 4. dispute-evidence
+- **Purpose:** Store dispute evidence (photos, documents)
+- Max file size: 10MB
+- Allowed types: image/*, application/pdf
+- Permissions: Platform read, user write own files
+
+### 5. delivery-proofs
+- **Purpose:** Store delivery confirmation photos
+- Max file size: 5MB
+- Allowed types: image/*
+- Permissions: Platform read, seller write
+
+## Compliance & Legal
+
+- **Data Retention:** 7 years for all escrow transactions (financial compliance)
+- **Audit Trail:** All events logged permanently
+- **Dispute Records:** Must be retained with evidence
+- **Payment Records:** Stripe automatically retains for 7 years
+- **Tax Reporting:** Platform fees are taxable income
+- **Know Your Customer (KYC):** Handled by Stripe Connect verification
+
+## Total Collections Summary
+
+**Original:** 3 collections (users, banks, transactions)
+**Smart Wallet:** 16 collections (subscriptions through reports)
+**Escrow System:** 4 collections (stripe_accounts through config)
+
+**Grand Total:** 23 Collections

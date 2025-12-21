@@ -635,3 +635,223 @@ declare interface BusinessMetrics extends DashboardMetrics {
     margin: number;
   }[];
 }
+
+// ========================================
+// STRIPE CONNECT ESCROW SYSTEM
+// ========================================
+
+declare type StripeAccountType = "standard" | "express" | "custom";
+
+declare interface StripeConnectedAccount {
+  $id: string;
+  userId: string;
+  stripeAccountId: string; // Stripe connected account ID
+  accountType: StripeAccountType;
+  country: string;
+  currency: string;
+  isActive: boolean;
+  isVerified: boolean;
+  canReceivePayments: boolean;
+  canMakePayouts: boolean;
+  requirementsCurrentlyDue: string[]; // Stripe verification requirements
+  requirementsPastDue: string[];
+  requirementsEventuallyDue: string[];
+  payoutsEnabled: boolean;
+  chargesEnabled: boolean;
+  detailsSubmitted: boolean;
+  onboardingLink?: string; // Temporary onboarding URL
+  onboardingExpiresAt?: string;
+  $createdAt: string;
+  $updatedAt: string;
+}
+
+declare type EscrowStatus =
+  | "pending_payment"      // Waiting for buyer to pay
+  | "payment_received"     // Payment captured, waiting for shipment
+  | "shipped"              // Seller marked as shipped, waiting for delivery
+  | "in_transit"           // Tracking shows in transit
+  | "delivered"            // Tracking shows delivered, waiting for confirmation
+  | "confirmed"            // Buyer confirmed receipt
+  | "auto_released"        // Auto-released after timer
+  | "released"             // Funds released to seller
+  | "disputed"             // Buyer raised a dispute
+  | "refunded"             // Refunded to buyer
+  | "cancelled";           // Transaction cancelled
+
+declare type SettlementConditionType =
+  | "tracking_confirmation"  // Requires tracking number verification
+  | "time_based"             // Auto-release after X days
+  | "buyer_confirmation"     // Requires buyer explicit confirmation
+  | "delivery_confirmation"  // Requires delivery scan from carrier
+  | "milestone_based"        // Service projects - milestone completion
+  | "inspection_period"      // Physical goods - inspection period
+  | "dual_signature"         // Both parties must confirm
+  | "smart_contract";        // Programmable conditions
+
+declare interface SettlementCondition {
+  type: SettlementConditionType;
+  description: string;
+  isMet: boolean;
+  metAt?: string;
+  config: {
+    // For tracking_confirmation
+    requireTracking?: boolean;
+    carrierName?: string;
+    trackingNumber?: string;
+    deliveryConfirmed?: boolean;
+
+    // For time_based
+    autoReleaseDays?: number;
+    autoReleaseAt?: string;
+
+    // For buyer_confirmation
+    confirmationRequired?: boolean;
+    confirmationDeadline?: string;
+
+    // For milestone_based
+    milestones?: {
+      id: string;
+      description: string;
+      percentage: number;
+      completed: boolean;
+      completedAt?: string;
+    }[];
+
+    // For inspection_period
+    inspectionDays?: number;
+    inspectionDeadline?: string;
+
+    // For dual_signature
+    buyerSigned?: boolean;
+    sellerSigned?: boolean;
+  };
+  priority: number; // 1 = highest, determines order of evaluation
+}
+
+declare interface EscrowTransaction {
+  $id: string;
+
+  // Parties
+  buyerId: string;
+  sellerId: string;
+  sellerStripeAccountId: string;
+
+  // Transaction details
+  itemDescription: string;
+  itemType: "physical_goods" | "digital_goods" | "service" | "subscription";
+  amount: number; // Total amount in cents
+  platformFee: number; // Platform fee in cents
+  sellerAmount: number; // Amount seller receives (amount - platformFee)
+  currency: string;
+
+  // Payment
+  stripePaymentIntentId: string;
+  stripeChargeId?: string;
+  stripeTransferId?: string; // Transfer to connected account
+  stripePayoutId?: string; // Payout to seller's bank
+
+  // Status & Timeline
+  status: EscrowStatus;
+  statusHistory: {
+    status: EscrowStatus;
+    timestamp: string;
+    triggeredBy: "buyer" | "seller" | "platform" | "system";
+    note?: string;
+  }[];
+
+  // Settlement Conditions
+  settlementConditions: SettlementCondition[];
+  allConditionsMet: boolean;
+
+  // Shipping & Tracking
+  shippingDetails?: {
+    carrier: string;
+    trackingNumber: string;
+    trackingUrl?: string;
+    shippedAt?: string;
+    estimatedDelivery?: string;
+    actualDelivery?: string;
+    deliverySignature?: string;
+    deliveryPhoto?: string;
+  };
+
+  // Dispute Management
+  disputeReason?: string;
+  disputedAt?: string;
+  disputeResolution?: {
+    resolvedBy: "buyer" | "seller" | "platform";
+    resolution: "refund_full" | "refund_partial" | "release_to_seller" | "split";
+    refundAmount?: number;
+    resolvedAt: string;
+    notes: string;
+  };
+
+  // Protection Periods
+  disputePeriodDays: number; // Default: 7 days after delivery
+  disputePeriodEndsAt?: string;
+
+  // Metadata
+  metadata?: {
+    orderId?: string;
+    invoiceId?: string;
+    projectId?: string;
+    customFields?: Record<string, any>;
+  };
+
+  $createdAt: string;
+  $updatedAt: string;
+}
+
+declare interface EscrowEvent {
+  $id: string;
+  escrowTransactionId: string;
+  eventType:
+    | "payment_received"
+    | "shipped"
+    | "tracking_updated"
+    | "delivered"
+    | "confirmed"
+    | "disputed"
+    | "refunded"
+    | "released"
+    | "condition_met"
+    | "condition_failed";
+  description: string;
+  triggeredBy: "buyer" | "seller" | "platform" | "system" | "webhook";
+  data?: Record<string, any>;
+  $createdAt: string;
+}
+
+// Settlement Rule Templates
+declare interface SettlementRuleTemplate {
+  $id: string;
+  name: string;
+  description: string;
+  itemType: "physical_goods" | "digital_goods" | "service" | "subscription";
+  conditions: Omit<SettlementCondition, "isMet" | "metAt">[];
+  isDefault: boolean;
+  isActive: boolean;
+  $createdAt: string;
+  $updatedAt: string;
+}
+
+// Platform Configuration
+declare interface EscrowPlatformConfig {
+  $id: string;
+  platformFeePercentage: number; // e.g., 2.5 for 2.5%
+  platformFeeFixed: number; // Fixed fee in cents
+  stripeFeePercentage: number; // 2.9%
+  stripeFeeFixed: number; // 30 cents
+  defaultDisputePeriodDays: number; // 7 days
+  defaultAutoReleaseDays: number; // 14 days
+  defaultInspectionDays: number; // 3 days
+  minTransactionAmount: number; // Minimum transaction in cents
+  maxTransactionAmount: number; // Maximum without manual review
+  requiresTrackingAbove: number; // Require tracking for amounts above this
+  supportEmail: string;
+  supportPhone?: string;
+  termsUrl: string;
+  privacyUrl: string;
+  $createdAt: string;
+  $updatedAt: string;
+}
